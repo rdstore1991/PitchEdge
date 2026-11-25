@@ -4,6 +4,7 @@ import com.example.ai.GroundedSource
 
 enum class AppDestination(val label: String) {
     MATCHDAY("Dashboard"),
+    SERIES("Series"),
     EDGES("Edges"),
     TACTICS("Tactics"),
     SELECTIONS("Card")

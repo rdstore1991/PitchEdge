@@ -715,7 +715,7 @@ fun WinProbabilityOddsCard(
                 }
             }
 
-            if (isFeaturedDcDv) {
+            if (markets.isNotEmpty()) {
                 Spacer(modifier = Modifier.height(14.dp))
                 ProbabilityEdgeComparisonChart(markets = markets)
             }
@@ -910,103 +910,16 @@ fun ScoreProjectionTacticalCard(
             HorizontalDivider(color = edgeColors.cardBorder.copy(alpha = 0.6f))
             Spacer(modifier = Modifier.height(12.dp))
 
-            // Powerplay / Middle / Death Phase Ratings
-            Text(
-                text = "Phase Ratings (Out of 10)",
-                style = MaterialTheme.typography.titleSmall,
-                color = MaterialTheme.colorScheme.onSurface
+            // Tabbed Tactical & Score Projection Breakdown
+            TacticalScoreProjectionTabsCard(
+                fixture = fixture,
+                projectedFirstInnings = projectedFirstInnings,
+                projectedSecondInnings = projectedSecondInnings,
+                tossScenario = tossScenario,
+                selectedPhase = selectedPhase,
+                phaseInfo = phaseInfo,
+                onSelectPhase = onSelectPhase
             )
-            Spacer(modifier = Modifier.height(8.dp))
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                TacticalPhase.entries.forEach { phase ->
-                    val selected = phase == selectedPhase
-                    Surface(
-                        modifier = Modifier
-                            .weight(1f)
-                            .minimumInteractiveComponentSize()
-                            .clickable { onSelectPhase(phase) }
-                            .testTag("dashboard_phase_${phase.name.lowercase()}"),
-                        shape = RoundedCornerShape(10.dp),
-                        color = if (selected) MaterialTheme.colorScheme.primaryContainer else edgeColors.elevatedSurface,
-                        border = BorderStroke(
-                            1.dp,
-                            if (selected) MaterialTheme.colorScheme.primary else edgeColors.cardBorder
-                        )
-                    ) {
-                        Column(
-                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 8.dp),
-                            horizontalAlignment = Alignment.CenterHorizontally
-                        ) {
-                            Text(
-                                text = phase.title,
-                                style = MaterialTheme.typography.labelMedium,
-                                color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
-                                fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                            Text(
-                                text = phase.oversLabel,
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                    }
-                }
-            }
-
-            if (phaseInfo != null) {
-                Spacer(modifier = Modifier.height(10.dp))
-                AnimatedContent(targetState = phaseInfo, label = "phaseRatingsAnim") { info ->
-                    Column {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(
-                                text = info.headline,
-                                style = MaterialTheme.typography.titleSmall,
-                                color = MaterialTheme.colorScheme.onSurface,
-                                modifier = Modifier.weight(1f)
-                            )
-                            StatusChip(
-                                text = "DC ${info.dcRatingOutOf10} / DV ${info.dvRatingOutOf10}",
-                                containerColor = edgeColors.elevatedSurface,
-                                contentColor = MaterialTheme.colorScheme.primary
-                            )
-                        }
-                        Spacer(modifier = Modifier.height(8.dp))
-                        PhaseTensionBar(dcAdvantage = info.dcAdvantageScore)
-                        Spacer(modifier = Modifier.height(8.dp))
-                        info.keyBattles.forEach { battle ->
-                            Row(
-                                modifier = Modifier.padding(vertical = 2.dp),
-                                verticalAlignment = Alignment.Top
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Filled.FiberManualRecord,
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.primary,
-                                    modifier = Modifier
-                                        .padding(top = 5.dp)
-                                        .size(7.dp)
-                                )
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text(
-                                    text = battle,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                        }
-                    }
-                }
-            }
 
             // Key Player Impact Cards
             if (fixture.id == "ilt20_m6_dc_dv" && playerLeverages.isNotEmpty()) {

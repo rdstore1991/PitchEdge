@@ -28,11 +28,13 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Analytics
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.DarkMode
+import androidx.compose.material.icons.filled.EmojiEvents
 import androidx.compose.material.icons.filled.FactCheck
 import androidx.compose.material.icons.filled.LightMode
 import androidx.compose.material.icons.filled.QueryStats
 import androidx.compose.material.icons.filled.Stadium
 import androidx.compose.material.icons.outlined.Analytics
+import androidx.compose.material.icons.outlined.EmojiEvents
 import androidx.compose.material.icons.outlined.FactCheck
 import androidx.compose.material.icons.outlined.QueryStats
 import androidx.compose.material.icons.outlined.Stadium
@@ -74,6 +76,7 @@ import com.example.ui.components.AnalystChatPanel
 import com.example.ui.screens.EdgesScreen
 import com.example.ui.screens.MatchdayScreen
 import com.example.ui.screens.SelectionsScreen
+import com.example.ui.screens.SeriesScreen
 import com.example.ui.screens.TacticsScreen
 import com.example.ui.theme.PitchEdgeTheme
 
@@ -310,6 +313,15 @@ fun PitchEdgeAppShell(
                                 onRunToolAgent = viewModel::runPitchEdgeToolAgent
                             )
 
+                            AppDestination.SERIES -> SeriesScreen(
+                                uiState = uiState,
+                                onSelectSeries = viewModel::selectSeries,
+                                onSelectSeriesTab = viewModel::selectSeriesTab,
+                                onSyncSeriesLiveData = viewModel::syncSeriesLiveData,
+                                onOpenFixtureQuantBreakdown = viewModel::openFixtureQuantBreakdown,
+                                onRunQuantAgentForFixture = viewModel::runQuantAgentForFixture
+                            )
+
                             AppDestination.EDGES -> EdgesScreen(
                                 uiState = uiState,
                                 onSelectFilter = viewModel::selectEdgeFilter,
@@ -387,6 +399,7 @@ fun PitchEdgeAppShell(
 private fun destinationIcon(destination: AppDestination, selected: Boolean): ImageVector {
     return when (destination) {
         AppDestination.MATCHDAY -> if (selected) Icons.Filled.Stadium else Icons.Outlined.Stadium
+        AppDestination.SERIES -> if (selected) Icons.Filled.EmojiEvents else Icons.Outlined.EmojiEvents
         AppDestination.EDGES -> if (selected) Icons.Filled.QueryStats else Icons.Outlined.QueryStats
         AppDestination.TACTICS -> if (selected) Icons.Filled.Analytics else Icons.Outlined.Analytics
         AppDestination.SELECTIONS -> if (selected) Icons.Filled.FactCheck else Icons.Outlined.FactCheck

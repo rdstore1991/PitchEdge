@@ -38,6 +38,7 @@ import com.example.ui.MatchdayUiState
 import com.example.ui.components.PhaseTensionBar
 import com.example.ui.components.SectionHeader
 import com.example.ui.components.StatusChip
+import com.example.ui.components.TacticalScoreProjectionTabsCard
 import com.example.ui.theme.LocalEdgeColors
 
 @Composable
@@ -53,6 +54,19 @@ fun TacticsScreen(
         contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
+        // Tabbed Tactical & Score Projection Breakdown
+        item {
+            TacticalScoreProjectionTabsCard(
+                fixture = uiState.activeFixture,
+                projectedFirstInnings = uiState.projectedFirstInnings,
+                projectedSecondInnings = uiState.projectedSecondInnings,
+                tossScenario = uiState.tossScenario,
+                selectedPhase = uiState.selectedPhase,
+                phaseInfo = uiState.selectedPhaseInfo,
+                onSelectPhase = onSelectPhase
+            )
+        }
+
         // Phase Selector + Breakdown
         item {
             SectionHeader(

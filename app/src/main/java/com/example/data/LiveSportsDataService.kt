@@ -437,6 +437,42 @@ class LiveSportsDataService(
             }
         }
 
+    suspend fun fetchCricApiSeriesListJson(searchQuery: String): JSONObject =
+        withContext(Dispatchers.IO) {
+            if (!isCricApiConfigured()) {
+                return@withContext JSONObject().apply {
+                    put("error", "CRIC_API_KEY is not set. Add CRIC_API_KEY in the AI Studio Secrets panel.")
+                }
+            }
+            val cacheKey = "pitchedge:cricapi:series:${searchQuery.lowercase(Locale.US)}"
+            cache.get<JSONObject>(cacheKey)?.let { return@withContext it }
+
+            val url = "$CRIC_BASE_URL/series?apikey=${
+                URLEncoder.encode(BuildConfig.CRIC_API_KEY, "UTF-8")
+            }&offset=0&search=${URLEncoder.encode(searchQuery, "UTF-8")}"
+            val payload = JSONObject(executeGet(url))
+            cache.set(cacheKey, payload, 300L)
+            payload
+        }
+
+    suspend fun fetchCricApiSeriesPointsJson(seriesId: String): JSONObject =
+        withContext(Dispatchers.IO) {
+            if (!isCricApiConfigured()) {
+                return@withContext JSONObject().apply {
+                    put("error", "CRIC_API_KEY is not set. Add CRIC_API_KEY in the AI Studio Secrets panel.")
+                }
+            }
+            val cacheKey = "pitchedge:cricapi:series_points:$seriesId"
+            cache.get<JSONObject>(cacheKey)?.let { return@withContext it }
+
+            val url = "$CRIC_BASE_URL/series_points?apikey=${
+                URLEncoder.encode(BuildConfig.CRIC_API_KEY, "UTF-8")
+            }&id=${URLEncoder.encode(seriesId, "UTF-8")}"
+            val payload = JSONObject(executeGet(url))
+            cache.set(cacheKey, payload, 120L)
+            payload
+        }
+
     suspend fun fetchLiveCricketSlateForUi(): List<FixtureOverview> {
         val matchesJson = fetchLiveCricketMatchesJson(null)
         if (matchesJson.has("error")) {

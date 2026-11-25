@@ -8,6 +8,7 @@ import com.example.ai.AiAnalystService
 import com.example.ai.AiStreamEvent
 import com.example.data.LiveSportsDataService
 import com.example.data.MatchRepository
+import com.example.data.SeriesRepository
 import com.example.model.AnalystChatMessage
 import com.example.model.AnalyticalPick
 import com.example.model.AppDestination
@@ -20,6 +21,10 @@ import com.example.model.PhaseMatchupInfo
 import com.example.model.PlayerLeverageNote
 import com.example.model.PlayerSlot
 import com.example.model.PreTossChecklist
+import com.example.model.SeriesBundle
+import com.example.model.SeriesLeague
+import com.example.model.SeriesLiveSyncState
+import com.example.model.SeriesSectionTab
 import com.example.model.SportFilter
 import com.example.model.StatusFilter
 import com.example.model.TacticalPhase
@@ -70,6 +75,10 @@ data class MatchdayUiState(
     val isChatStreaming: Boolean = false,
     val isSyncingLiveFeeds: Boolean = false,
     val liveFeedStatusMessage: String? = null,
+    val selectedSeries: SeriesLeague = SeriesLeague.ILT20_2026,
+    val selectedSeriesTab: SeriesSectionTab = SeriesSectionTab.FIXTURES,
+    val seriesBundles: Map<SeriesLeague, SeriesBundle> = emptyMap(),
+    val seriesLiveSyncState: Map<SeriesLeague, SeriesLiveSyncState> = emptyMap(),
     val chatMessages: List<AnalystChatMessage> = listOf(
         AnalystChatMessage(
             id = "welcome_msg",
@@ -78,6 +87,12 @@ data class MatchdayUiState(
         )
     )
 ) {
+    val activeSeriesBundle: SeriesBundle?
+        get() = seriesBundles[selectedSeries]
+
+    val activeSeriesSyncState: SeriesLiveSyncState
+        get() = seriesLiveSyncState[selectedSeries] ?: SeriesLiveSyncState.Idle
+
     val filteredFixtures: List<FixtureOverview>
         get() {
             val bySport = allFixtures.filter { it.sport == selectedSport }
@@ -167,6 +182,7 @@ data class MatchdayUiState(
 
 class MatchdayViewModel(application: Application) : AndroidViewModel(application) {
     private val repository = MatchRepository(application.applicationContext)
+    private val seriesRepository = SeriesRepository()
     private val sportsDataService = LiveSportsDataService()
     private val aiService = AiAnalystService(sportsDataService)
 
@@ -180,7 +196,11 @@ class MatchdayViewModel(application: Application) : AndroidViewModel(application
             phaseMatchups = repository.phaseMatchups,
             playerLeverages = repository.playerLeverages,
             primarySelection = repository.primarySelection,
-            secondaryLeans = repository.secondaryLeans
+            secondaryLeans = repository.secondaryLeans,
+            seriesBundles = mapOf(
+                SeriesLeague.ILT20_2026 to seriesRepository.getSeriesBundle(SeriesLeague.ILT20_2026),
+                SeriesLeague.WBBL_2026 to seriesRepository.getSeriesBundle(SeriesLeague.WBBL_2026)
+            )
         )
     )
     val uiState: StateFlow<MatchdayUiState> = _uiState.asStateFlow()
@@ -211,17 +231,25 @@ class MatchdayViewModel(application: Application) : AndroidViewModel(application
         viewModelScope.launch { repository.setDarkTheme(next) }
     }
 
+    private fun applySelectedFixture(state: MatchdayUiState, fixture: FixtureOverview): MatchdayUiState {
+        val newEdges = repository.marketEdgesForFixture(fixture)
+        val firstMarket = newEdges.firstOrNull()
+        return state.copy(
+            selectedFixtureId = fixture.id,
+            projectedFirstInnings = fixture.defaultFirstInnScore,
+            projectedSecondInnings = fixture.defaultSecondInnScore,
+            marketEdges = newEdges,
+            selectedCalculatorMarketId = firstMarket?.id ?: state.selectedCalculatorMarketId,
+            customOdds = firstMarket?.bestOdds ?: state.customOdds,
+            groundedIntelState = GroundedIntelUiState.Idle
+        )
+    }
+
     fun selectSport(sport: SportFilter) {
         _uiState.update { state ->
             val updated = state.copy(selectedSport = sport, groundedIntelState = GroundedIntelUiState.Idle)
             val firstMatch = updated.filteredFixtures.firstOrNull()
-            if (firstMatch != null) {
-                updated.copy(
-                    selectedFixtureId = firstMatch.id,
-                    projectedFirstInnings = firstMatch.defaultFirstInnScore,
-                    projectedSecondInnings = firstMatch.defaultSecondInnScore
-                )
-            } else updated
+            if (firstMatch != null) applySelectedFixture(updated, firstMatch) else updated
         }
     }
 
@@ -229,13 +257,7 @@ class MatchdayViewModel(application: Application) : AndroidViewModel(application
         _uiState.update { state ->
             val updated = state.copy(selectedFormat = format)
             val firstMatch = updated.filteredFixtures.firstOrNull()
-            if (firstMatch != null) {
-                updated.copy(
-                    selectedFixtureId = firstMatch.id,
-                    projectedFirstInnings = firstMatch.defaultFirstInnScore,
-                    projectedSecondInnings = firstMatch.defaultSecondInnScore
-                )
-            } else updated
+            if (firstMatch != null) applySelectedFixture(updated, firstMatch) else updated
         }
     }
 
@@ -243,25 +265,141 @@ class MatchdayViewModel(application: Application) : AndroidViewModel(application
         _uiState.update { state ->
             val updated = state.copy(selectedStatus = status)
             val firstMatch = updated.filteredFixtures.firstOrNull()
-            if (firstMatch != null) {
-                updated.copy(
-                    selectedFixtureId = firstMatch.id,
-                    projectedFirstInnings = firstMatch.defaultFirstInnScore,
-                    projectedSecondInnings = firstMatch.defaultSecondInnScore
-                )
-            } else updated
+            if (firstMatch != null) applySelectedFixture(updated, firstMatch) else updated
         }
     }
 
     fun selectFixture(fixtureId: String) {
         _uiState.update { state ->
             val fixture = state.allFixtures.find { it.id == fixtureId } ?: return@update state
-            state.copy(
-                selectedFixtureId = fixture.id,
-                projectedFirstInnings = fixture.defaultFirstInnScore,
-                projectedSecondInnings = fixture.defaultSecondInnScore,
-                groundedIntelState = GroundedIntelUiState.Idle
+            applySelectedFixture(state, fixture)
+        }
+    }
+
+    fun selectSeries(league: SeriesLeague) {
+        _uiState.update { it.copy(selectedSeries = league) }
+    }
+
+    fun selectSeriesTab(tab: SeriesSectionTab) {
+        _uiState.update { it.copy(selectedSeriesTab = tab) }
+    }
+
+    fun openFixtureQuantBreakdown(fixtureId: String) {
+        _uiState.update { state ->
+            val fixture = state.allFixtures.find { it.id == fixtureId } ?: return@update state
+            val synced = applySelectedFixture(
+                state.copy(
+                    selectedSport = fixture.sport,
+                    selectedFormat = FormatFilter.ALL,
+                    selectedStatus = fixture.status,
+                    currentTab = AppDestination.MATCHDAY
+                ),
+                fixture
             )
+            synced
+        }
+    }
+
+    fun runQuantAgentForFixture(fixtureId: String) {
+        _uiState.update { state ->
+            val fixture = state.allFixtures.find { it.id == fixtureId } ?: return@update state
+            applySelectedFixture(
+                state.copy(
+                    selectedSport = fixture.sport,
+                    selectedFormat = FormatFilter.ALL,
+                    selectedStatus = fixture.status
+                ),
+                fixture
+            )
+        }
+        runPitchEdgeToolAgent()
+    }
+
+    fun syncSeriesLiveData(league: SeriesLeague, tab: SeriesSectionTab) {
+        viewModelScope.launch {
+            _uiState.update { state ->
+                state.copy(
+                    seriesLiveSyncState = state.seriesLiveSyncState + (league to SeriesLiveSyncState.Loading)
+                )
+            }
+            try {
+                val cricApiNote = if (sportsDataService.isCricApiConfigured()) {
+                    try {
+                        val query = if (league == SeriesLeague.ILT20_2026) "ILT20" else "Women's Big Bash"
+                        val seriesJson = sportsDataService.fetchCricApiSeriesListJson(query)
+                        val arr = seriesJson.optJSONArray("data")
+                        if (arr != null && arr.length() > 0) {
+                            val first = arr.getJSONObject(0)
+                            val seriesId = first.optString("id")
+                            val seriesName = first.optString("name", league.title)
+                            if (seriesId.isNotBlank() && tab == SeriesSectionTab.POINTS) {
+                                val pts = sportsDataService.fetchCricApiSeriesPointsJson(seriesId)
+                                val ptsArr = pts.optJSONArray("data")
+                                if (ptsArr != null && ptsArr.length() > 0) {
+                                    "CricAPI verified $seriesName (${ptsArr.length()} teams in points table). "
+                                } else "CricAPI matched $seriesName. "
+                            } else {
+                                "CricAPI matched $seriesName. "
+                            }
+                        } else ""
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Optional CricAPI series check skipped", e)
+                        ""
+                    }
+                } else ""
+
+                val prompt = buildString {
+                    append("Search the web for the latest official updates on ${league.title} ")
+                    append("as of today (Nov 25, 2026), focusing on ${tab.label}: ")
+                    when (tab) {
+                        SeriesSectionTab.FIXTURES -> append("upcoming schedule, match dates/times, and most recent match results.")
+                        SeriesSectionTab.POINTS -> append("current standings, points, wins/losses, and Net Run Rate (NRR).")
+                        SeriesSectionTab.TEAMS -> append("confirmed final 2026 squads, captaincy, and international availability / injury news.")
+                        SeriesSectionTab.NEWS -> append("breaking team news, replacement signings, pitch/dew advisories, and toss updates.")
+                        SeriesSectionTab.VENUES -> append("venue conditions, recent 1st-innings totals, chasing bias, and weather/dew trends.")
+                        SeriesSectionTab.STATS -> append("season leading run-scorers, wicket-takers, economy rates, and strike rates.")
+                    }
+                    append(" Summarize concisely in 4 quantitative bullet points.")
+                }
+
+                val result = aiService.fetchGroundedIntel(prompt)
+                val fullSummary = (cricApiNote + result.summary).trim()
+                _uiState.update { state ->
+                    state.copy(
+                        seriesLiveSyncState = state.seriesLiveSyncState + (
+                            league to SeriesLiveSyncState.Success(
+                                summary = fullSummary,
+                                sources = result.sources
+                            )
+                        )
+                    )
+                }
+            } catch (e: TimeoutCancellationException) {
+                _uiState.update { state ->
+                    state.copy(
+                        seriesLiveSyncState = state.seriesLiveSyncState + (
+                            league to SeriesLiveSyncState.Error(
+                                "Google Search sync timed out after 60s. Tap Live Sync to retry."
+                            )
+                        )
+                    )
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e(TAG, "Series live sync failed", e)
+                _uiState.update { state ->
+                    state.copy(
+                        seriesLiveSyncState = state.seriesLiveSyncState + (
+                            league to SeriesLiveSyncState.Error(
+                                e.localizedMessage ?: "Unable to sync live series intel."
+                            )
+                        )
+                    )
+                }
+            }
         }
     }
 
@@ -287,7 +425,7 @@ class MatchdayViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun selectCalculatorMarket(marketId: String) {
-        val market = _uiState.value.marketEdges.find { it.id == marketId }
+        val market = _uiState.value.scenarioAdjustedEdges.find { it.id == marketId }
         _uiState.update {
             it.copy(
                 selectedCalculatorMarketId = marketId,

@@ -333,7 +333,7 @@ fun ProbabilityEdgeComparisonChart(
 
                         // Short X-axis label
                         val xLayout = textMeasurer.measure(
-                            text = shortMarketLabel(item.id),
+                            text = shortMarketLabel(item),
                             style = axisStyle.copy(
                                 color = if (isActive) modelColor else axisTextColor,
                                 fontWeight = if (isActive) FontWeight.Bold else FontWeight.Medium
@@ -532,7 +532,7 @@ fun ProbabilityEdgeComparisonChart(
 
                         // X-axis label
                         val xLayout = textMeasurer.measure(
-                            text = shortMarketLabel(item.id),
+                            text = shortMarketLabel(item),
                             style = axisStyle.copy(
                                 color = if (isActive) barColor else axisTextColor,
                                 fontWeight = if (isActive) FontWeight.Bold else FontWeight.Medium
@@ -638,10 +638,17 @@ private fun ChartLegendDot(color: Color, label: String) {
     }
 }
 
-private fun shortMarketLabel(id: String): String = when (id) {
+private fun shortMarketLabel(item: MarketEdgeItem): String = when (item.id) {
     "fakhar_10_quicker" -> "Fakhar 10R"
     "holden_top_dc" -> "Holden Bat"
     "dc_match_winner" -> "DC Win"
     "dv_match_winner" -> "DV Win"
-    else -> id.take(8)
+    else -> {
+        val clean = item.marketName.substringBefore(" (").trim()
+        when {
+            clean.startsWith("1st Inn Over") -> clean.replace("1st Inn Over", "Ov").substringBefore(" Runs").trim()
+            clean.contains(" ") -> clean.split(" ").filter { it.isNotBlank() }.take(2).joinToString(" ") { it.take(5) }
+            else -> clean.take(10)
+        }
+    }
 }
