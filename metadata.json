@@ -1,0 +1,6 @@
+{
+  "name": "PitchEdge",
+  "description": "Quantitative matchday telemetry, probability edges, tactical phase matchups, and toss scenario modeling for DP World ILT20 2026 Match 6 (Dubai Capitals vs. Desert Vipers).",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
