@@ -6,6 +6,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.ai.AiAnalystService
 import com.example.ai.AiStreamEvent
+import com.example.data.LiveSportsDataService
 import com.example.data.MatchRepository
 import com.example.model.AnalystChatMessage
 import com.example.model.AnalyticalPick
@@ -67,11 +68,13 @@ data class MatchdayUiState(
     val isChatOpen: Boolean = false,
     val chatInput: String = "",
     val isChatStreaming: Boolean = false,
+    val isSyncingLiveFeeds: Boolean = false,
+    val liveFeedStatusMessage: String? = null,
     val chatMessages: List<AnalystChatMessage> = listOf(
         AnalystChatMessage(
             id = "welcome_msg",
             isUser = false,
-            text = "PitchEdge AI Analyst ready with Google Search Grounding. Ask about Fakhar vs Babar at Dubai, live toss/XI updates, session par runs, or custom Kelly bankroll sizing."
+            text = "PitchEdge AI Analyst ready with Google Search Grounding + CricAPI/Odds API Tool Orchestration. Ask about Fakhar vs Babar, live toss/XIs, session par runs, or run the PitchEdge Tool Agent."
         )
     )
 ) {
@@ -99,15 +102,51 @@ data class MatchdayUiState(
     val isFeaturedDcDvMatch: Boolean
         get() = activeFixture.id == "ilt20_m6_dc_dv"
 
+    val scenarioAdjustedEdges: List<MarketEdgeItem>
+        get() = marketEdges.map { item ->
+            when (item.id) {
+                "dc_match_winner" -> {
+                    val model = tossScenario.dcWinModelPct.toDouble()
+                    val edge = Math.round((model - item.marketImpliedPct) * 10.0) / 10.0
+                    val roiEv = Math.round(((model / 100.0) * item.bestOdds - 1.0) * 1000.0) / 10.0
+                    val evSign = if (roiEv > 0) "+" else ""
+                    item.copy(
+                        modelPct = model,
+                        edgePct = edge,
+                        evNote = "${evSign}${String.format(java.util.Locale.US, "%.1f", roiEv)}% EV at ${String.format(java.util.Locale.US, "%.2f", item.bestOdds)} • ${tossScenario.shortLabel}",
+                        statusBadge = when {
+                            edge >= 3.0 -> "PLAYABLE +EV"
+                            edge > 0.0 -> "CONDITIONAL +EV"
+                            else -> "SKIP (-EV)"
+                        }
+                    )
+                }
+                "dv_match_winner" -> {
+                    val model = tossScenario.dvWinModelPct.toDouble()
+                    val edge = Math.round((model - item.marketImpliedPct) * 10.0) / 10.0
+                    val roiEv = Math.round(((model / 100.0) * item.bestOdds - 1.0) * 1000.0) / 10.0
+                    val evSign = if (roiEv > 0) "+" else ""
+                    item.copy(
+                        modelPct = model,
+                        edgePct = edge,
+                        evNote = "${evSign}${String.format(java.util.Locale.US, "%.1f", roiEv)}% EV vs ${String.format(java.util.Locale.US, "%.1f", model)}% model",
+                        statusBadge = if (edge > 0.0) "MARGINAL +EV" else "SKIP (-EV)"
+                    )
+                }
+                else -> item
+            }
+        }
+
     val filteredEdges: List<MarketEdgeItem>
         get() = when (edgeFilter) {
-            EdgeFilter.ALL -> marketEdges
-            EdgeFilter.POSITIVE_EV -> marketEdges.filter { it.edgePct > 0.0 }
-            EdgeFilter.PROPS -> marketEdges.filter { it.isProp }
+            EdgeFilter.ALL -> scenarioAdjustedEdges
+            EdgeFilter.POSITIVE_EV -> scenarioAdjustedEdges.filter { it.edgePct > 0.0 }
+            EdgeFilter.PROPS -> scenarioAdjustedEdges.filter { it.isProp }
         }
 
     val selectedCalculatorMarket: MarketEdgeItem?
-        get() = marketEdges.find { it.id == selectedCalculatorMarketId } ?: marketEdges.firstOrNull()
+        get() = scenarioAdjustedEdges.find { it.id == selectedCalculatorMarketId }
+            ?: scenarioAdjustedEdges.firstOrNull()
 
     val selectedPhaseInfo: PhaseMatchupInfo?
         get() = phaseMatchups.find { it.phase == selectedPhase } ?: phaseMatchups.firstOrNull()
@@ -128,7 +167,8 @@ data class MatchdayUiState(
 
 class MatchdayViewModel(application: Application) : AndroidViewModel(application) {
     private val repository = MatchRepository(application.applicationContext)
-    private val aiService = AiAnalystService()
+    private val sportsDataService = LiveSportsDataService()
+    private val aiService = AiAnalystService(sportsDataService)
 
     private val _uiState = MutableStateFlow(
         MatchdayUiState(
@@ -413,6 +453,21 @@ class MatchdayViewModel(application: Application) : AndroidViewModel(application
                     userPrompt = prompt
                 ).collect { event ->
                     when (event) {
+                        is AiStreamEvent.ToolProgress -> {
+                            _uiState.update { s ->
+                                s.copy(
+                                    chatMessages = s.chatMessages.map { msg ->
+                                        if (msg.id == assistantMsgId) {
+                                            msg.copy(
+                                                searchQueries = event.toolNames,
+                                                isStreaming = true
+                                            )
+                                        } else msg
+                                    }
+                                )
+                            }
+                        }
+
                         is AiStreamEvent.Chunk -> {
                             _uiState.update { s ->
                                 s.copy(
@@ -475,6 +530,165 @@ class MatchdayViewModel(application: Application) : AndroidViewModel(application
                             if (msg.id == assistantMsgId) {
                                 msg.copy(
                                     text = e.localizedMessage ?: "Analyst request failed.",
+                                    isStreaming = false,
+                                    isError = true
+                                )
+                            } else msg
+                        }
+                    )
+                }
+            }
+        }
+    }
+
+    fun syncLiveCricApiSlate() {
+        if (_uiState.value.isSyncingLiveFeeds) return
+        viewModelScope.launch {
+            _uiState.update {
+                it.copy(
+                    isSyncingLiveFeeds = true,
+                    liveFeedStatusMessage = "Syncing CricAPI live matches..."
+                )
+            }
+            try {
+                val liveFixtures = sportsDataService.fetchLiveCricketSlateForUi()
+                if (liveFixtures.isEmpty()) {
+                    _uiState.update {
+                        it.copy(
+                            isSyncingLiveFeeds = false,
+                            liveFeedStatusMessage = "CricAPI connected, 0 extra fixtures returned."
+                        )
+                    }
+                } else {
+                    _uiState.update { state ->
+                        val baseIds = repository.fixturesSlate.map { it.id }.toSet()
+                        val merged = repository.fixturesSlate + liveFixtures.filterNot { it.id in baseIds }
+                        state.copy(
+                            allFixtures = merged,
+                            isSyncingLiveFeeds = false,
+                            liveFeedStatusMessage = "Loaded ${liveFixtures.size} live CricAPI fixtures."
+                        )
+                    }
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e(TAG, "CricAPI sync failed", e)
+                _uiState.update {
+                    it.copy(
+                        isSyncingLiveFeeds = false,
+                        liveFeedStatusMessage = e.localizedMessage ?: "CricAPI sync failed."
+                    )
+                }
+            }
+        }
+    }
+
+    fun runPitchEdgeToolAgent() {
+        if (_uiState.value.isChatStreaming) return
+        val fixture = _uiState.value.activeFixture
+        val query = "Run a full PitchEdge quantitative analysis for ${fixture.homeName} vs ${fixture.awayName} (${fixture.leagueTitle}) using live CricAPI scorecards and The Odds API vig-free probabilities."
+
+        val userMsg = AnalystChatMessage(
+            id = UUID.randomUUID().toString(),
+            isUser = true,
+            text = "Run PitchEdge Tool Agent: ${fixture.homeName} vs ${fixture.awayName}"
+        )
+        val assistantMsgId = UUID.randomUUID().toString()
+        val placeholder = AnalystChatMessage(
+            id = assistantMsgId,
+            isUser = false,
+            text = "",
+            isStreaming = true
+        )
+
+        _uiState.update {
+            it.copy(
+                isChatOpen = true,
+                isChatStreaming = true,
+                chatMessages = it.chatMessages + userMsg + placeholder
+            )
+        }
+
+        viewModelScope.launch {
+            try {
+                aiService.analyzeWithPitchEdgeTools(query).collect { event ->
+                    when (event) {
+                        is AiStreamEvent.ToolProgress -> {
+                            _uiState.update { s ->
+                                s.copy(
+                                    chatMessages = s.chatMessages.map { msg ->
+                                        if (msg.id == assistantMsgId) {
+                                            msg.copy(
+                                                text = "Executing live tools: ${event.toolNames.joinToString(", ")}",
+                                                searchQueries = event.toolNames,
+                                                isStreaming = true
+                                            )
+                                        } else msg
+                                    }
+                                )
+                            }
+                        }
+
+                        is AiStreamEvent.Chunk -> {
+                            _uiState.update { s ->
+                                s.copy(
+                                    chatMessages = s.chatMessages.map { msg ->
+                                        if (msg.id == assistantMsgId) {
+                                            msg.copy(
+                                                text = event.accumulatedText,
+                                                isStreaming = true
+                                            )
+                                        } else msg
+                                    }
+                                )
+                            }
+                        }
+
+                        is AiStreamEvent.Completed -> {
+                            _uiState.update { s ->
+                                s.copy(
+                                    isChatStreaming = false,
+                                    chatMessages = s.chatMessages.map { msg ->
+                                        if (msg.id == assistantMsgId) {
+                                            msg.copy(
+                                                text = event.fullText,
+                                                isStreaming = false,
+                                                searchQueries = event.searchQueries
+                                            )
+                                        } else msg
+                                    }
+                                )
+                            }
+                        }
+                    }
+                }
+            } catch (e: TimeoutCancellationException) {
+                _uiState.update { s ->
+                    s.copy(
+                        isChatStreaming = false,
+                        chatMessages = s.chatMessages.map { msg ->
+                            if (msg.id == assistantMsgId) {
+                                msg.copy(
+                                    text = "PitchEdge Tool Agent timed out after 60s.",
+                                    isStreaming = false,
+                                    isError = true
+                                )
+                            } else msg
+                        }
+                    )
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e(TAG, "PitchEdge Tool Agent failed", e)
+                _uiState.update { s ->
+                    s.copy(
+                        isChatStreaming = false,
+                        chatMessages = s.chatMessages.map { msg ->
+                            if (msg.id == assistantMsgId) {
+                                msg.copy(
+                                    text = e.localizedMessage ?: "Tool orchestration failed.",
                                     isStreaming = false,
                                     isError = true
                                 )

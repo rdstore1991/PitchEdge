@@ -28,6 +28,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material.icons.filled.TravelExplore
@@ -62,6 +63,7 @@ fun AnalystChatPanel(
     isStreaming: Boolean,
     onInputChange: (String) -> Unit,
     onSendMessage: (String?) -> Unit,
+    onRunToolAgent: () -> Unit,
     onClose: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -175,14 +177,43 @@ fun AnalystChatPanel(
                 }
             }
 
-            // Quick Follow-up Chips
+            // Quick Follow-up Chips + Live Tool Agent Trigger
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .horizontalScroll(rememberScrollState())
                     .padding(horizontal = 12.dp, vertical = 6.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
+                Surface(
+                    shape = RoundedCornerShape(50),
+                    color = edgeColors.positiveEdgeContainer,
+                    border = BorderStroke(1.dp, edgeColors.positiveEdge),
+                    modifier = Modifier
+                        .minimumInteractiveComponentSize()
+                        .testTag("run_tool_agent_chat_chip")
+                        .clickable(enabled = !isStreaming) { onRunToolAgent() }
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.Bolt,
+                            contentDescription = null,
+                            tint = edgeColors.positiveEdge,
+                            modifier = Modifier.size(14.dp)
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(
+                            text = "Run Live Tool Agent",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.SemiBold,
+                            color = edgeColors.positiveEdge
+                        )
+                    }
+                }
                 quickPrompts.forEach { prompt ->
                     Surface(
                         shape = RoundedCornerShape(50),
@@ -332,11 +363,12 @@ private fun ChatMessageBubble(message: AnalystChatMessage) {
                         modifier = Modifier.horizontalScroll(rememberScrollState()),
                         horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
-                        message.searchQueries.take(3).forEach { query ->
+                        message.searchQueries.take(4).forEach { query ->
+                            val isToolCall = query.startsWith("get_")
                             StatusChip(
-                                text = "Search: $query",
-                                containerColor = edgeColors.capitalsContainer,
-                                contentColor = edgeColors.capitalsAccent
+                                text = if (isToolCall) "Tool: $query" else "Search: $query",
+                                containerColor = if (isToolCall) edgeColors.positiveEdgeContainer else edgeColors.capitalsContainer,
+                                contentColor = if (isToolCall) edgeColors.positiveEdge else edgeColors.capitalsAccent
                             )
                         }
                     }

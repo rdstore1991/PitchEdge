@@ -186,12 +186,12 @@ fun EdgesScreen(
             ) {
                 Column(modifier = Modifier.padding(14.dp)) {
                     Text(
-                        text = "Market Implied vs. AI Model (%)",
+                        text = "DC vs. DV — AI Model vs. Market Implied Edges",
                         style = MaterialTheme.typography.titleSmall,
                         color = MaterialTheme.colorScheme.onSurface
                     )
                     Text(
-                        text = "Tap a bar pair to inspect edge delta and load into Kelly simulator",
+                        text = "${uiState.tossScenario.title} • Tap any bar column to inspect EV delta & load into Kelly simulator",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )

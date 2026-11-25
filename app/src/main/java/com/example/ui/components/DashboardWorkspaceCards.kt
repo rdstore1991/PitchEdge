@@ -1063,6 +1063,7 @@ fun ScoreProjectionTacticalCard(
 fun AiBestOpinionCard(
     fixture: FixtureOverview,
     onAskAnalystClick: () -> Unit,
+    onRunToolAgentClick: () -> Unit,
     onOpenCardTab: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -1222,7 +1223,7 @@ fun AiBestOpinionCard(
             Spacer(modifier = Modifier.height(12.dp))
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 Button(
                     onClick = onAskAnalystClick,
@@ -1238,10 +1239,19 @@ fun AiBestOpinionCard(
                     Icon(
                         imageVector = Icons.Filled.AutoAwesome,
                         contentDescription = null,
-                        modifier = Modifier.size(16.dp)
+                        modifier = Modifier.size(15.dp)
                     )
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text("Ask AI Analyst", style = MaterialTheme.typography.labelLarge)
+                    Spacer(modifier = Modifier.width(5.dp))
+                    Text("Ask Analyst", style = MaterialTheme.typography.labelMedium)
+                }
+                OutlinedButton(
+                    onClick = onRunToolAgentClick,
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.secondary),
+                    modifier = Modifier
+                        .minimumInteractiveComponentSize()
+                        .testTag("run_pitchedge_tool_agent_button")
+                ) {
+                    Text("Live Tools", style = MaterialTheme.typography.labelMedium)
                 }
                 OutlinedButton(
                     onClick = onOpenCardTab,

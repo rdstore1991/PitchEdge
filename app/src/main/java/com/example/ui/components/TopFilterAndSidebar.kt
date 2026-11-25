@@ -169,7 +169,10 @@ fun TopFilterBar(
 fun MatchSelectorSidebar(
     fixtures: List<FixtureOverview>,
     selectedFixtureId: String,
+    isSyncingLiveFeeds: Boolean,
+    liveFeedStatusMessage: String?,
     onSelectFixture: (String) -> Unit,
+    onSyncLiveFeeds: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val edgeColors = LocalEdgeColors.current
@@ -193,13 +196,29 @@ fun MatchSelectorSidebar(
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
-                StatusChip(
-                    text = "${fixtures.size} ACTIVE",
-                    containerColor = edgeColors.elevatedSurface,
-                    contentColor = MaterialTheme.colorScheme.primary
-                )
+                androidx.compose.material3.TextButton(
+                    onClick = onSyncLiveFeeds,
+                    enabled = !isSyncingLiveFeeds,
+                    modifier = Modifier
+                        .minimumInteractiveComponentSize()
+                        .testTag("sync_cricapi_button")
+                ) {
+                    Text(
+                        text = if (isSyncingLiveFeeds) "Syncing..." else "Sync CricAPI",
+                        style = MaterialTheme.typography.labelSmall
+                    )
+                }
             }
-            Spacer(modifier = Modifier.height(10.dp))
+            if (!liveFeedStatusMessage.isNullOrBlank()) {
+                Text(
+                    text = liveFeedStatusMessage,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(bottom = 8.dp)
+                )
+            } else {
+                Spacer(modifier = Modifier.height(6.dp))
+            }
 
             LazyColumn(
                 verticalArrangement = Arrangement.spacedBy(10.dp),

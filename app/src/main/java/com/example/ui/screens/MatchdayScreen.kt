@@ -59,6 +59,7 @@ fun MatchdayScreen(
     onSelectFormat: (FormatFilter) -> Unit,
     onSelectStatus: (StatusFilter) -> Unit,
     onSelectFixture: (String) -> Unit,
+    onSyncLiveFeeds: () -> Unit,
     onRefreshGroundedIntel: () -> Unit,
     onFirstInningsChange: (Int) -> Unit,
     onSecondInningsChange: (Int) -> Unit,
@@ -69,6 +70,7 @@ fun MatchdayScreen(
     onOpenTacticsTab: () -> Unit,
     onOpenCardTab: () -> Unit,
     onOpenAnalystChat: () -> Unit,
+    onRunToolAgent: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val edgeColors = LocalEdgeColors.current
@@ -92,7 +94,10 @@ fun MatchdayScreen(
                     MatchSelectorSidebar(
                         fixtures = uiState.filteredFixtures,
                         selectedFixtureId = activeFixture.id,
-                        onSelectFixture = onSelectFixture
+                        isSyncingLiveFeeds = uiState.isSyncingLiveFeeds,
+                        liveFeedStatusMessage = uiState.liveFeedStatusMessage,
+                        onSelectFixture = onSelectFixture,
+                        onSyncLiveFeeds = onSyncLiveFeeds
                     )
                 }
 
@@ -105,11 +110,37 @@ fun MatchdayScreen(
                 ) {
                     if (!showLeftSidebar) {
                         item {
-                            CompactMatchSelectorStrip(
-                                fixtures = uiState.filteredFixtures,
-                                selectedFixtureId = activeFixture.id,
-                                onSelectFixture = onSelectFixture
-                            )
+                            Column {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 4.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = uiState.liveFeedStatusMessage ?: "Match Slate",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    androidx.compose.material3.TextButton(
+                                        onClick = onSyncLiveFeeds,
+                                        enabled = !uiState.isSyncingLiveFeeds,
+                                        modifier = Modifier.minimumInteractiveComponentSize()
+                                    ) {
+                                        Text(
+                                            text = if (uiState.isSyncingLiveFeeds) "Syncing..." else "Sync CricAPI",
+                                            style = MaterialTheme.typography.labelSmall
+                                        )
+                                    }
+                                }
+                                CompactMatchSelectorStrip(
+                                    fixtures = uiState.filteredFixtures,
+                                    selectedFixtureId = activeFixture.id,
+                                    onSelectFixture = onSelectFixture
+                                )
+                            }
                         }
                     }
 
@@ -129,7 +160,7 @@ fun MatchdayScreen(
                             fixture = activeFixture,
                             tossScenario = uiState.tossScenario,
                             isFeaturedDcDv = uiState.isFeaturedDcDvMatch,
-                            markets = uiState.marketEdges,
+                            markets = uiState.scenarioAdjustedEdges,
                             onOpenEdgesTab = onOpenEdgesTab
                         )
                     }
@@ -158,6 +189,7 @@ fun MatchdayScreen(
                         AiBestOpinionCard(
                             fixture = activeFixture,
                             onAskAnalystClick = onOpenAnalystChat,
+                            onRunToolAgentClick = onRunToolAgent,
                             onOpenCardTab = onOpenCardTab
                         )
                     }

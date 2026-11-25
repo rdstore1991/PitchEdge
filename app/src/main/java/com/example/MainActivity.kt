@@ -296,6 +296,7 @@ fun PitchEdgeAppShell(
                                 onSelectFormat = viewModel::selectFormat,
                                 onSelectStatus = viewModel::selectStatus,
                                 onSelectFixture = viewModel::selectFixture,
+                                onSyncLiveFeeds = viewModel::syncLiveCricApiSlate,
                                 onRefreshGroundedIntel = viewModel::refreshLiveGroundedIntel,
                                 onFirstInningsChange = viewModel::updateProjectedFirstInnings,
                                 onSecondInningsChange = viewModel::updateProjectedSecondInnings,
@@ -305,7 +306,8 @@ fun PitchEdgeAppShell(
                                 onOpenEdgesTab = { onSelectTab(AppDestination.EDGES) },
                                 onOpenTacticsTab = { onSelectTab(AppDestination.TACTICS) },
                                 onOpenCardTab = { onSelectTab(AppDestination.SELECTIONS) },
-                                onOpenAnalystChat = { viewModel.setChatOpen(true) }
+                                onOpenAnalystChat = { viewModel.setChatOpen(true) },
+                                onRunToolAgent = viewModel::runPitchEdgeToolAgent
                             )
 
                             AppDestination.EDGES -> EdgesScreen(
@@ -347,6 +349,7 @@ fun PitchEdgeAppShell(
                             isStreaming = uiState.isChatStreaming,
                             onInputChange = viewModel::updateChatInput,
                             onSendMessage = viewModel::sendAnalystQuestion,
+                            onRunToolAgent = viewModel::runPitchEdgeToolAgent,
                             onClose = { viewModel.setChatOpen(false) },
                             modifier = Modifier.width(360.dp)
                         )
@@ -370,6 +373,7 @@ fun PitchEdgeAppShell(
                     isStreaming = uiState.isChatStreaming,
                     onInputChange = viewModel::updateChatInput,
                     onSendMessage = viewModel::sendAnalystQuestion,
+                    onRunToolAgent = viewModel::runPitchEdgeToolAgent,
                     onClose = { viewModel.setChatOpen(false) },
                     modifier = Modifier
                         .fillMaxWidth()
