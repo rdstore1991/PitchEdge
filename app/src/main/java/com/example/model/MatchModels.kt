@@ -218,5 +218,6 @@ data class AnalystChatMessage(
     val isStreaming: Boolean = false,
     val isError: Boolean = false,
     val searchQueries: List<String> = emptyList(),
-    val sources: List<GroundedSource> = emptyList()
+    val sources: List<GroundedSource> = emptyList(),
+    val structuredAnalysis: PitchEdgeAnalysisResponse? = null
 )

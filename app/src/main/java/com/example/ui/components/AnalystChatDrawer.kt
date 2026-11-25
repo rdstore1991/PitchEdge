@@ -349,6 +349,8 @@ private fun ChatMessageBubble(message: AnalystChatMessage) {
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
+                } else if (message.structuredAnalysis != null) {
+                    PitchEdgeStructuredAnalysisCard(analysis = message.structuredAnalysis)
                 } else {
                     Text(
                         text = message.text,
@@ -364,7 +366,7 @@ private fun ChatMessageBubble(message: AnalystChatMessage) {
                         horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         message.searchQueries.take(4).forEach { query ->
-                            val isToolCall = query.startsWith("get_")
+                            val isToolCall = query.startsWith("get_") || query == "schema_synthesis"
                             StatusChip(
                                 text = if (isToolCall) "Tool: $query" else "Search: $query",
                                 containerColor = if (isToolCall) edgeColors.positiveEdgeContainer else edgeColors.capitalsContainer,

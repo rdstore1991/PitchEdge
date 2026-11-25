@@ -586,8 +586,24 @@ class MatchdayViewModel(application: Application) : AndroidViewModel(application
 
     fun runPitchEdgeToolAgent() {
         if (_uiState.value.isChatStreaming) return
-        val fixture = _uiState.value.activeFixture
-        val query = "Run a full PitchEdge quantitative analysis for ${fixture.homeName} vs ${fixture.awayName} (${fixture.leagueTitle}) using live CricAPI scorecards and The Odds API vig-free probabilities."
+        val stateSnapshot = _uiState.value
+        val fixture = stateSnapshot.activeFixture
+        val query = "Run a full PitchEdge quantitative analysis for ${fixture.homeName} vs ${fixture.awayName} (${fixture.leagueTitle}) across h2h, totals, and spreads using live CricAPI scorecards and The Odds API vig-free probabilities."
+
+        val fixtureContext = buildString {
+            appendLine("Sport: ${fixture.sport.label} | Format: ${fixture.format.label} | League: ${fixture.leagueTitle}")
+            appendLine("Fixture: ${fixture.homeName} (${fixture.homeRecord}) vs ${fixture.awayName} (${fixture.awayRecord})")
+            appendLine("Status: ${fixture.liveScoreOrTimer} | ${fixture.oversOrPeriod}")
+            appendLine("Venue: ${fixture.venue} | Weather: ${fixture.weatherLine}")
+            appendLine("Toss/Scenario: ${stateSnapshot.tossScenario.title} (${stateSnapshot.tossScenario.parRange})")
+            appendLine("Win Prob Model: ${fixture.homeCode} ${fixture.homeModelPct}% vs ${fixture.awayCode} ${fixture.awayModelPct}% | Market: ${fixture.marketHomePct}% / ${fixture.marketAwayPct}%")
+            appendLine("Projected Sliders: 1st Inn ${stateSnapshot.projectedFirstInnings}, 2nd Inn ${stateSnapshot.projectedSecondInnings} ${fixture.scoreUnitLabel}")
+            appendLine("Bookmaker Rows: ${fixture.bookmakerRows.joinToString { "${it.bookmaker}: ${fixture.homeCode} ${it.homeOdds} / ${fixture.awayCode} ${it.awayOdds} (vig ${it.overroundPct}%)" }}")
+            if (stateSnapshot.isFeaturedDcDvMatch) {
+                appendLine("Key Edges: Fakhar 10 Runs Quicker @ 2.20 (+6.5% edge, 52% model vs 45.5% implied); Holden DC Top Bat @ 4.33 (+7.9% edge, Impact-Sub risk); DC ML @ 2.20; DV @ 1.78.")
+                appendLine("Micro-Factors: Low Nov humidity (29-44%) limits dew; Hassan Khan 3.25 econ; Chameera 4-0-25-2; Noor 2/40; Shadab 3/18; Tom Curran 4-0-21-2; Khuzaima 3/31.")
+            }
+        }
 
         val userMsg = AnalystChatMessage(
             id = UUID.randomUUID().toString(),
@@ -612,7 +628,10 @@ class MatchdayViewModel(application: Application) : AndroidViewModel(application
 
         viewModelScope.launch {
             try {
-                aiService.analyzeWithPitchEdgeTools(query).collect { event ->
+                aiService.analyzeWithPitchEdgeTools(
+                    userQuery = query,
+                    fixtureContext = fixtureContext
+                ).collect { event ->
                     when (event) {
                         is AiStreamEvent.ToolProgress -> {
                             _uiState.update { s ->
@@ -654,7 +673,8 @@ class MatchdayViewModel(application: Application) : AndroidViewModel(application
                                             msg.copy(
                                                 text = event.fullText,
                                                 isStreaming = false,
-                                                searchQueries = event.searchQueries
+                                                searchQueries = event.searchQueries,
+                                                structuredAnalysis = event.structuredAnalysis
                                             )
                                         } else msg
                                     }

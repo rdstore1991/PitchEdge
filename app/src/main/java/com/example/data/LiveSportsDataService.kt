@@ -130,6 +130,23 @@ class LiveSportsDataService(
                 return@withContext JSONObject().apply { put("error", "CricAPI Match Info Error: $reason") }
             }
 
+            val rawScores = d.optJSONArray("score") ?: JSONArray()
+            val enrichedScores = JSONArray()
+            for (i in 0 until rawScores.length()) {
+                val s = rawScores.getJSONObject(i)
+                val runs = s.optInt("r", 0)
+                val oversNotation = s.optDouble("o", 0.0)
+                val wholeOvers = kotlin.math.floor(oversNotation)
+                val balls = kotlin.math.round((oversNotation - wholeOvers) * 10.0)
+                val trueOvers = wholeOvers + (balls / 6.0)
+                val crr = if (trueOvers > 0.0) Math.round((runs / trueOvers) * 100.0) / 100.0 else 0.0
+                enrichedScores.put(
+                    JSONObject(s.toString()).apply {
+                        put("crr", crr)
+                    }
+                )
+            }
+
             val normalized = JSONObject().apply {
                 put("id", d.optString("id"))
                 put("name", d.optString("name"))
@@ -141,7 +158,7 @@ class LiveSportsDataService(
                 put("tossWinner", d.optString("tossWinner").ifBlank { "Pending" })
                 put("tossChoice", d.optString("tossChoice").ifBlank { "Pending" })
                 put("matchWinner", if (d.isNull("matchWinner")) JSONObject.NULL else d.optString("matchWinner"))
-                put("score", d.optJSONArray("score") ?: JSONArray())
+                put("score", enrichedScores)
             }
             cache.set(cacheKey, normalized, 25L)
             normalized
@@ -180,16 +197,24 @@ class LiveSportsDataService(
                 }
             }
 
-            val cacheKey = "pitchedge:oddsapi:odds:$sportKey"
+            val cacheKey = "pitchedge:oddsapi:odds_v2:$sportKey"
             var events = cache.get<JSONArray>(cacheKey)
 
             if (events == null) {
-                val url = "$ODDS_BASE_URL/sports/${
-                    URLEncoder.encode(sportKey, "UTF-8")
-                }/odds/?apiKey=${
-                    URLEncoder.encode(BuildConfig.ODDS_API_KEY, "UTF-8")
-                }&regions=uk,eu,au&markets=h2h&oddsFormat=decimal"
-                events = JSONArray(executeGet(url))
+                val encodedSport = URLEncoder.encode(sportKey, "UTF-8")
+                val encodedKey = URLEncoder.encode(BuildConfig.ODDS_API_KEY, "UTF-8")
+                val multiMarketUrl = "$ODDS_BASE_URL/sports/$encodedSport/odds/?apiKey=$encodedKey&regions=uk,eu,au&markets=h2h,totals,spreads&oddsFormat=decimal"
+                val rawBody = try {
+                    executeGet(multiMarketUrl)
+                } catch (e: IllegalStateException) {
+                    if (e.message?.contains("HTTP 422") == true) {
+                        val fallbackUrl = "$ODDS_BASE_URL/sports/$encodedSport/odds/?apiKey=$encodedKey&regions=uk,eu,au&markets=h2h&oddsFormat=decimal"
+                        executeGet(fallbackUrl)
+                    } else {
+                        throw e
+                    }
+                }
+                events = JSONArray(rawBody)
                 cache.set(cacheKey, events, 30L)
             }
 
@@ -207,57 +232,111 @@ class LiveSportsDataService(
                     continue
                 }
 
-                val bestBack = mutableMapOf<String, Pair<Double, String>>()
-                val exchangeLay = mutableMapOf<String, Pair<Double, String>>()
+                val bestBackH2h = mutableMapOf<String, Pair<Double, String>>()
+                val exchangeLayH2h = mutableMapOf<String, Pair<Double, String>>()
+                // totals grouped by exact linePoint -> side ("Over"/"Under") -> (bestOdds, bookie)
+                val totalsByPoint = mutableMapOf<Double, MutableMap<String, Pair<Double, String>>>()
+                // spreads grouped by abs(point) -> "(name, signedPoint)" -> (bestOdds, bookie, teamName, signedPoint)
+                val spreadsByAbs = mutableMapOf<Double, MutableMap<String, SpreadQuoteCandidate>>()
+
                 var bookmakerCount = 0
                 val bookmakers = event.optJSONArray("bookmakers") ?: JSONArray()
 
                 for (bIdx in 0 until bookmakers.length()) {
                     val bookie = bookmakers.getJSONObject(bIdx)
                     val bookieTitle = bookie.optString("title")
+                    val isExchange = bookie.optString("key").contains("betfair", ignoreCase = true) ||
+                        bookie.optString("key").contains("smarkets", ignoreCase = true) ||
+                        bookie.optString("key").contains("matchbook", ignoreCase = true)
                     val markets = bookie.optJSONArray("markets") ?: JSONArray()
                     for (mIdx in 0 until markets.length()) {
                         val mkt = markets.getJSONObject(mIdx)
                         val mktKey = mkt.optString("key")
                         val outcomes = mkt.optJSONArray("outcomes") ?: JSONArray()
-                        if (mktKey == "h2h" && outcomes.length() > 0) {
-                            bookmakerCount++
-                            for (oIdx in 0 until outcomes.length()) {
-                                val o = outcomes.getJSONObject(oIdx)
-                                val name = o.optString("name")
-                                val price = o.optDouble("price", 0.0)
-                                val prev = bestBack[name]
-                                if (price > 0.0 && (prev == null || price > prev.first)) {
-                                    bestBack[name] = price to bookieTitle
+                        when {
+                            mktKey == "h2h" && outcomes.length() > 0 -> {
+                                bookmakerCount++
+                                for (oIdx in 0 until outcomes.length()) {
+                                    val o = outcomes.getJSONObject(oIdx)
+                                    val name = o.optString("name")
+                                    val price = o.optDouble("price", 0.0)
+                                    val prev = bestBackH2h[name]
+                                    if (price > 0.0 && (prev == null || price > prev.first)) {
+                                        bestBackH2h[name] = price to bookieTitle
+                                    }
+                                    if (isExchange && price > 0.0) {
+                                        val layEst = Math.round((price + 0.02) * 100.0) / 100.0
+                                        val prevLay = exchangeLayH2h[name]
+                                        if (prevLay == null || layEst < prevLay.first) {
+                                            exchangeLayH2h[name] = layEst to bookieTitle
+                                        }
+                                    }
                                 }
                             }
-                        } else if (mktKey == "h2h_lay" && outcomes.length() > 0) {
-                            for (oIdx in 0 until outcomes.length()) {
-                                val o = outcomes.getJSONObject(oIdx)
-                                val name = o.optString("name")
-                                val price = o.optDouble("price", 0.0)
-                                val prev = exchangeLay[name]
-                                if (price > 0.0 && (prev == null || price < prev.first)) {
-                                    exchangeLay[name] = price to bookieTitle
+
+                            mktKey == "h2h_lay" && outcomes.length() > 0 -> {
+                                for (oIdx in 0 until outcomes.length()) {
+                                    val o = outcomes.getJSONObject(oIdx)
+                                    val name = o.optString("name")
+                                    val price = o.optDouble("price", 0.0)
+                                    val prev = exchangeLayH2h[name]
+                                    if (price > 0.0 && (prev == null || price < prev.first)) {
+                                        exchangeLayH2h[name] = price to bookieTitle
+                                    }
+                                }
+                            }
+
+                            mktKey == "totals" && outcomes.length() > 0 -> {
+                                for (oIdx in 0 until outcomes.length()) {
+                                    val o = outcomes.getJSONObject(oIdx)
+                                    val name = o.optString("name")
+                                    val price = o.optDouble("price", 0.0)
+                                    val point = o.optDouble("point", Double.NaN)
+                                    if (price > 0.0 && !point.isNaN()) {
+                                        val sideMap = totalsByPoint.getOrPut(point) { mutableMapOf() }
+                                        val prev = sideMap[name]
+                                        if (prev == null || price > prev.first) {
+                                            sideMap[name] = price to bookieTitle
+                                        }
+                                    }
+                                }
+                            }
+
+                            mktKey == "spreads" && outcomes.length() > 0 -> {
+                                for (oIdx in 0 until outcomes.length()) {
+                                    val o = outcomes.getJSONObject(oIdx)
+                                    val name = o.optString("name")
+                                    val price = o.optDouble("price", 0.0)
+                                    val point = o.optDouble("point", Double.NaN)
+                                    if (price > 0.0 && !point.isNaN()) {
+                                        val absLine = kotlin.math.abs(point)
+                                        val lineMap = spreadsByAbs.getOrPut(absLine) { mutableMapOf() }
+                                        val key = "$name|$point"
+                                        val prev = lineMap[key]
+                                        if (prev == null || price > prev.bestOdds) {
+                                            lineMap[key] = SpreadQuoteCandidate(name, point, price, bookieTitle)
+                                        }
+                                    }
                                 }
                             }
                         }
                     }
                 }
 
-                val rawEntries = bestBack.entries.map { (name, pair) ->
+                // 1. Vig-strip H2H
+                val rawH2hEntries = bestBackH2h.entries.map { (name, pair) ->
                     Triple(name, pair, 1.0 / pair.first)
                 }
-                val totalImpliedSum = rawEntries.sumOf { it.third }
-                val overroundPercent = if (totalImpliedSum > 0.0) {
-                    ((totalImpliedSum - 1.0) * 100.0 * 100.0).toInt() / 100.0
+                val totalImpliedH2h = rawH2hEntries.sumOf { it.third }
+                val overroundH2h = if (totalImpliedH2h > 0.0) {
+                    Math.round((totalImpliedH2h - 1.0) * 10000.0) / 100.0
                 } else 0.0
 
                 val marketProbsArray = JSONArray()
-                rawEntries.forEach { (name, pair, rawImplied) ->
+                rawH2hEntries.forEach { (name, pair, rawImplied) ->
                     val rawPct = Math.round(rawImplied * 10000.0) / 100.0
-                    val vigFreePct = if (totalImpliedSum > 0.0) {
-                        Math.round((rawImplied / totalImpliedSum) * 10000.0) / 100.0
+                    val vigFreePct = if (totalImpliedH2h > 0.0) {
+                        Math.round((rawImplied / totalImpliedH2h) * 10000.0) / 100.0
                     } else 0.0
 
                     marketProbsArray.put(
@@ -265,9 +344,71 @@ class LiveSportsDataService(
                             put("selection", name)
                             put("bestBackOdds", pair.first)
                             put("bestBookmaker", pair.second)
-                            put("exchangeLayOdds", exchangeLay[name]?.first ?: JSONObject.NULL)
+                            put("exchangeLayOdds", exchangeLayH2h[name]?.first ?: JSONObject.NULL)
                             put("rawImpliedPercent", rawPct)
                             put("trueVigFreeMarketPercent", vigFreePct)
+                        }
+                    )
+                }
+
+                // 2. Vig-strip Totals grouped by linePoint
+                val totalsArray = JSONArray()
+                totalsByPoint.toSortedMap().forEach { (linePoint, sideMap) ->
+                    val entries = sideMap.entries.map { (side, pair) -> Triple(side, pair, 1.0 / pair.first) }
+                    val sumRaw = entries.sumOf { it.third }
+                    val overround = if (sumRaw > 0.0) Math.round((sumRaw - 1.0) * 10000.0) / 100.0 else 0.0
+                    val outcomesArr = JSONArray()
+                    entries.forEach { (side, pair, rawImp) ->
+                        val rawPct = Math.round(rawImp * 10000.0) / 100.0
+                        val vigFreePct = if (sumRaw > 0.0) Math.round((rawImp / sumRaw) * 10000.0) / 100.0 else 0.0
+                        outcomesArr.put(
+                            JSONObject().apply {
+                                put("selection", "$side $linePoint")
+                                put("side", side)
+                                put("linePoint", linePoint)
+                                put("bestBackOdds", pair.first)
+                                put("bestBookmaker", pair.second)
+                                put("rawImpliedPercent", rawPct)
+                                put("trueVigFreeMarketPercent", vigFreePct)
+                            }
+                        )
+                    }
+                    totalsArray.put(
+                        JSONObject().apply {
+                            put("linePoint", linePoint)
+                            put("marketOverroundPercent", overround)
+                            put("outcomes", outcomesArr)
+                        }
+                    )
+                }
+
+                // 3. Vig-strip Spreads grouped by absolute spread margin
+                val spreadsArray = JSONArray()
+                spreadsByAbs.toSortedMap().forEach { (absSpread, lineMap) ->
+                    val entries = lineMap.values.map { cand -> cand to (1.0 / cand.bestOdds) }
+                    val sumRaw = entries.sumOf { it.second }
+                    val overround = if (sumRaw > 0.0) Math.round((sumRaw - 1.0) * 10000.0) / 100.0 else 0.0
+                    val outcomesArr = JSONArray()
+                    entries.forEach { (cand, rawImp) ->
+                        val rawPct = Math.round(rawImp * 10000.0) / 100.0
+                        val vigFreePct = if (sumRaw > 0.0) Math.round((rawImp / sumRaw) * 10000.0) / 100.0 else 0.0
+                        val signedStr = if (cand.signedPoint > 0) "+${cand.signedPoint}" else "${cand.signedPoint}"
+                        outcomesArr.put(
+                            JSONObject().apply {
+                                put("selection", "${cand.teamName} $signedStr")
+                                put("linePoint", cand.signedPoint)
+                                put("bestBackOdds", cand.bestOdds)
+                                put("bestBookmaker", cand.bookmaker)
+                                put("rawImpliedPercent", rawPct)
+                                put("trueVigFreeMarketPercent", vigFreePct)
+                            }
+                        )
+                    }
+                    spreadsArray.put(
+                        JSONObject().apply {
+                            put("absSpread", absSpread)
+                            put("marketOverroundPercent", overround)
+                            put("outcomes", outcomesArr)
                         }
                     )
                 }
@@ -280,8 +421,10 @@ class LiveSportsDataService(
                         put("commenceTime", event.optString("commence_time"))
                         put("homeTeam", homeTeam)
                         put("awayTeam", awayTeam)
-                        put("marketOverroundPercent", overroundPercent)
+                        put("marketOverroundPercent", overroundH2h)
                         put("marketProbabilities", marketProbsArray)
+                        put("totalsMarkets", totalsArray)
+                        put("spreadsMarkets", spreadsArray)
                         put("bookmakerCount", bookmakerCount)
                     }
                 )
@@ -379,3 +522,10 @@ class LiveSportsDataService(
         }
     }
 }
+
+private data class SpreadQuoteCandidate(
+    val teamName: String,
+    val signedPoint: Double,
+    val bestOdds: Double,
+    val bookmaker: String
+)

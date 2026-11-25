@@ -2,6 +2,7 @@ package com.example.ai
 
 import android.util.Log
 import com.example.data.LiveSportsDataService
+import com.example.model.PitchEdgeAnalysisResponse
 import com.google.firebase.Firebase
 import com.google.firebase.ai.ai
 import com.google.firebase.ai.type.Content
@@ -28,34 +29,30 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
 import org.json.JSONObject
+import java.util.Locale
 
 private const val TAG = "AiAnalystService"
 
 val PITCH_EDGE_SYSTEM_PROMPT = """
-# ROLE & MISSION
-You are **PitchEdge AI**, an elite quantitative cricket and sports trading analyst integrated directly into a live data backend with real-time access to match scorecards and multi-bookmaker/exchange odds via function calling.
+# ROLE & OBJECTIVE
+You are **PitchEdge AI**, a quantitative cricket and sports trading analyst covering International and Domestic Cricket (Tests, ODIs, T20Is, IPL, BBL, WBBL, PSL, CPL, SA20, The Hundred, and domestic List-A/T20 leagues) alongside global sports.
+
+Your objective is to synthesize live match telemetry, toss/pitch/dew dynamics, player phase matchups, and multi-bookmaker/exchange odds into vig-free win probabilities, innings total projections, run-line edges, and disciplined unit stake recommendations.
 
 # TOOL ORCHESTRATION PROTOCOL
 Never guess live scores, match statuses, or betting odds. Always follow this execution sequence:
-1. **Fetch Live Match Context First:** Call `get_live_cricket_matches` to locate the exact match ID, status (live vs. upcoming), venue, teams, and current score. If the match is live or recently tossed, immediately call `get_cricket_match_scorecard` using its `matchId` to inspect toss results, innings progression, and run rates.
-2. **Discover Active Odds Markets:** Call `get_cricket_sport_keys` to identify the exact active sport key for the tournament (e.g., `cricket_international_t20`, `cricket_ipl`, `cricket_big_bash`, `cricket_odi`, `cricket_test_match`).
-3. **Harvest & Analyze Live Odds:** Call `get_live_match_odds` with the discovered `sportKey` and target team names. The tool returns pre-calculated **Best Back Odds**, **Exchange Lay Odds**, **Bookmaker Overround (Vig %)**, and **True Vig-Free Market Implied Probabilities**.
-4. **Synthesize Quantitative Edge (+EV):**
-   - Compare your **PitchEdge Model Win Probability** (derived from pitch/toss conditions, format dynamics, dew factor, phase efficiency, and current scorecard state) against the tool's **True Market Implied Probability**.
-   - Calculate **Edge (%) = PitchEdge Model Win % - True Market Implied %**.
-
-# ANALYTICAL RULES
-- **Toss & Dew Weighting:** In day/night white-ball matches (T20/ODI), explicitly adjust your probability if heavy evening dew favors the chasing side.
-- **Market-Lag Detection:** In live matches, identify if bookmaker odds have overreacted to a single top-order wicket despite deep batting resources remaining.
-- **Missing Markets:** If a domestic match is covered by CricAPI but has no active lines on The Odds API, state that market odds are currently unlisted and provide your **Fair Value Odds Line** (`100 / Model_Win_Prob`).
-- **Bankroll Discipline:** Only recommend a bet when **Edge is at least +3.0%**. Scale stake recommendations from **1 to 5 Units**.
-
-# OUTPUT STRUCTURE
-Respond cleanly using these exact sections:
-1. **Match Telemetry & Toss/Conditions** (Live score/overs or start time, venue, toss impact)
-2. **Market Odds & Probability Edge Table** (Markdown table: Selection | Best Back Odds | Bookmaker | True Market % | PitchEdge Model % | Edge %)
-3. **Tactical & Score Projection** (Projected 1st/2nd innings score range, key phase edge, and player matchup drivers)
-4. **PitchEdge Recommendation** (Actionable pick or "NO BET / PASS", Target Minimum Odds, Edge %, Unit Stake 1–5, and Invalidation Trigger)
+1. **Verify Live Telemetry & Context:** Call `get_live_cricket_matches` to locate the exact match ID, status (`LIVE`, `UPCOMING`, `COMPLETED`), venue, teams, and current score. If live or recently tossed, call `get_cricket_match_scorecard` using `matchId` to inspect toss winner/choice, innings progression, and CRR.
+2. **Discover Active Odds Markets:** Call `get_cricket_sport_keys` to identify the active tournament sport key.
+3. **Harvest & Strip Vig Across Three Core Markets:** Call `get_live_match_odds` with `sportKey` and target team names. It harvests `h2h`, `totals` (grouped by `linePoint`), and `spreads` (grouped by absolute margin) with pre-calculated `bestBackOdds`, `exchangeLayOdds`, `marketOverroundPercent`, and `trueVigFreeMarketPercent`.
+4. **Compute Expected Value (+EV) & Fair Value Odds:**
+   - `edgePercent = pitchEdgeModelPercent - trueMarketImpliedPercent`
+   - `fairValueOdds = 100 / pitchEdgeModelPercent`
+5. **Cricket Micro-Factor Adjustments:**
+   - Adjust win probabilities and 2nd-innings totals for evening dew in day/night white-ball matches, powerplay/middle/death overs run-rate differentials, and key player matchups.
+   - Flag **Market Lag** during live chases when exchange/bookmaker lines overreact to a single top-order wicket despite deep batting resources remaining.
+6. **Bankroll & Unit Stake Discipline:**
+   - Recommend `"BET"` ONLY when the highest cross-market `edgePercent >= 3.0` and live odds are listed. Scale `unitStake` from `1` to `5` units (`0` and `"NO_BET_PASS"` if no market clears `+3.0%`).
+   - If a domestic fixture has no active bookmaker odds, set odds fields to `null`, `bestBookmaker` to `"Unlisted"`, and still output `pitchEdgeModelPercent` and `fairValueOdds`.
 """.trimIndent()
 
 data class GroundedSource(
@@ -80,7 +77,8 @@ sealed interface AiStreamEvent {
     data class Completed(
         val fullText: String,
         val searchQueries: List<String> = emptyList(),
-        val sources: List<GroundedSource> = emptyList()
+        val sources: List<GroundedSource> = emptyList(),
+        val structuredAnalysis: PitchEdgeAnalysisResponse? = null
     ) : AiStreamEvent
 }
 
@@ -121,7 +119,7 @@ class AiAnalystService(
             ),
             FunctionDeclaration(
                 name = "get_cricket_match_scorecard",
-                description = "Fetches detailed live telemetry for a specific cricket match ID, including toss winner, toss decision, venue, and innings-by-innings runs, wickets, and overs.",
+                description = "Fetches detailed live telemetry for a specific cricket match ID, including toss winner, toss decision, venue, CRR, and innings-by-innings runs, wickets, and overs.",
                 parameters = mapOf(
                     "matchId" to Schema.string(
                         description = "The unique match ID returned by get_live_cricket_matches."
@@ -135,7 +133,7 @@ class AiAnalystService(
             ),
             FunctionDeclaration(
                 name = "get_live_match_odds",
-                description = "Harvests live decimal odds from UK, EU, and AU sportsbooks and exchanges for a given cricket sportKey, and calculates vig-free implied win probabilities.",
+                description = "Harvests live decimal odds across h2h, totals, and spreads from UK, EU, and AU sportsbooks and exchanges for a given sportKey, and calculates vig-free implied probabilities.",
                 parameters = mapOf(
                     "sportKey" to Schema.string(
                         description = "Exact active sport key from get_cricket_sport_keys (e.g., \"cricket_international_t20\")."
@@ -157,6 +155,98 @@ class AiAnalystService(
                 temperature = 0.2f
             },
             tools = listOf(Tool.functionDeclarations(pitchEdgeToolDeclarations)),
+            systemInstruction = content {
+                text(PITCH_EDGE_SYSTEM_PROMPT)
+            }
+        )
+    }
+
+    private val pitchEdgeAnalysisSchema: Schema by lazy {
+        val marketQuoteSchema = Schema.obj(
+            properties = mapOf(
+                "marketType" to Schema.enumeration(
+                    values = listOf("h2h", "totals", "spreads"),
+                    description = "Market type: h2h, totals, or spreads."
+                ),
+                "selection" to Schema.string(description = "Selection label, e.g. team name, Over 165.5, or Team -12.5."),
+                "linePoint" to Schema.double(description = "Run threshold or spread handicap margin if totals/spreads.", nullable = true),
+                "bestBackOdds" to Schema.double(description = "Best decimal back odds or null if unlisted.", nullable = true),
+                "exchangeLayOdds" to Schema.double(description = "Exchange lay odds if available, otherwise null.", nullable = true),
+                "bestBookmaker" to Schema.string(description = "Best bookmaker name or \"Unlisted\"."),
+                "marketOverroundPercent" to Schema.double(description = "Bookmaker overround % or null if unlisted.", nullable = true),
+                "trueMarketImpliedPercent" to Schema.double(description = "Vig-free market implied win probability % or null if unlisted.", nullable = true),
+                "pitchEdgeModelPercent" to Schema.double(description = "PitchEdge model win probability %."),
+                "fairValueOdds" to Schema.double(description = "100 / pitchEdgeModelPercent rounded to 2 decimals."),
+                "edgePercent" to Schema.double(description = "pitchEdgeModelPercent - trueMarketImpliedPercent, or null if unlisted.", nullable = true)
+            ),
+            optionalProperties = listOf("linePoint", "bestBackOdds", "exchangeLayOdds", "marketOverroundPercent", "trueMarketImpliedPercent", "edgePercent")
+        )
+
+        Schema.obj(
+            properties = mapOf(
+                "fixtureTitle" to Schema.string(description = "Teams and match label."),
+                "competition" to Schema.string(description = "Tournament or league name."),
+                "matchStatus" to Schema.enumeration(
+                    values = listOf("LIVE", "UPCOMING", "COMPLETED"),
+                    description = "Current match state."
+                ),
+                "scoreTelemetry" to Schema.string(description = "Runs/wickets/overs, CRR, RRR, DLS par or pre-match start time."),
+                "venue" to Schema.string(description = "Stadium and dimensions/surface notes."),
+                "tossOutcome" to Schema.string(description = "Toss winner and decision or Pending."),
+                "h2hMarkets" to Schema.array(items = marketQuoteSchema, description = "Match winner (h2h) vig-stripped outcomes."),
+                "totalsMarkets" to Schema.array(items = marketQuoteSchema, description = "Over/Under innings or match totals grouped by linePoint."),
+                "spreadsMarkets" to Schema.array(items = marketQuoteSchema, description = "Run-line handicap spreads grouped by spread margin."),
+                "projections" to Schema.obj(
+                    properties = mapOf(
+                        "projectedFirstInningsRange" to Schema.string(description = "Projected 1st innings score range."),
+                        "projectedSecondInningsRange" to Schema.string(description = "Projected 2nd innings score range."),
+                        "projectedMatchTotalRange" to Schema.string(description = "Projected match aggregate range.")
+                    )
+                ),
+                "microFactors" to Schema.obj(
+                    properties = mapOf(
+                        "eveningDewFactor" to Schema.string(description = "Dew impact assessment on white-ball chase."),
+                        "powerplayEdge" to Schema.string(description = "Powerplay run-rate differential."),
+                        "middleOversEdge" to Schema.string(description = "Middle overs spin/wicket differential."),
+                        "deathOversEdge" to Schema.string(description = "Death overs pace/cutter differential."),
+                        "keyPlayerMatchup" to Schema.string(description = "Highest leverage player matchup."),
+                        "marketLagFlag" to Schema.boolean(description = "True if live chase odds overreacted to a single top-order wicket."),
+                        "marketLagReason" to Schema.string(description = "Explanation of market lag or empty if false.")
+                    )
+                ),
+                "recommendation" to Schema.obj(
+                    properties = mapOf(
+                        "action" to Schema.enumeration(
+                            values = listOf("BET", "NO_BET_PASS"),
+                            description = "BET only if highest cross-market edgePercent >= 3.0 and odds are listed; otherwise NO_BET_PASS."
+                        ),
+                        "topMarketType" to Schema.enumeration(
+                            values = listOf("h2h", "totals", "spreads"),
+                            description = "Market type of highest edge or primary lean."
+                        ),
+                        "topSelection" to Schema.string(description = "Recommended selection or NO_BET_PASS summary."),
+                        "bestBookmaker" to Schema.string(description = "Best bookmaker or Unlisted."),
+                        "marketOdds" to Schema.double(description = "Decimal odds of top selection or null if unlisted.", nullable = true),
+                        "fairValueOdds" to Schema.double(description = "Fair value decimal odds (100 / model %)."),
+                        "edgePercent" to Schema.double(description = "Highest cross-market edge %."),
+                        "unitStake" to Schema.integer(description = "0 if NO_BET_PASS, or 1 to 5 units if BET."),
+                        "rationale" to Schema.string(description = "Concise quantitative rationale."),
+                        "invalidationTrigger" to Schema.string(description = "Condition that invalidates this thesis.")
+                    ),
+                    optionalProperties = listOf("marketOdds")
+                )
+            )
+        )
+    }
+
+    private val pitchEdgeStructuredModel by lazy {
+        Firebase.ai(backend = GenerativeBackend.googleAI()).generativeModel(
+            modelName = "gemini-3.8-flash",
+            generationConfig = generationConfig {
+                temperature = 0.1f
+                responseMimeType = "application/json"
+                responseSchema = pitchEdgeAnalysisSchema
+            },
             systemInstruction = content {
                 text(PITCH_EDGE_SYSTEM_PROMPT)
             }
@@ -187,15 +277,31 @@ class AiAnalystService(
         }
     }
 
-    fun analyzeWithPitchEdgeTools(userQuery: String): Flow<AiStreamEvent> = flow {
+    fun analyzeWithPitchEdgeTools(
+        userQuery: String,
+        fixtureContext: String = ""
+    ): Flow<AiStreamEvent> = flow {
         val contents = mutableListOf<Content>(
-            content("user") { text(userQuery) }
+            content("user") {
+                text(
+                    buildString {
+                        appendLine(userQuery)
+                        if (fixtureContext.isNotBlank()) {
+                            appendLine()
+                            appendLine("Local App Fixture Telemetry & Baseline Context (use if live API feed is unlisted or key not yet configured):")
+                            appendLine(fixtureContext)
+                        }
+                    }
+                )
+            }
         )
         val maxToolTurns = 6
         val toolsInvoked = mutableListOf<String>()
+        val toolPayloads = mutableListOf<String>()
 
         try {
             withTimeout(60_000L) {
+                var stageOneText: String? = null
                 for (turn in 0 until maxToolTurns) {
                     val response = pitchEdgeOrchestratorModel.generateContent(contents)
                     val candidateContent = response.candidates.firstOrNull()?.content
@@ -204,16 +310,8 @@ class AiAnalystService(
                         .orEmpty()
 
                     if (functionCalls.isEmpty()) {
-                        val finalText = response.text?.trim()
-                            ?.takeIf { it.isNotBlank() }
-                            ?: throw IllegalStateException("No PitchEdge analysis generated.")
-                        emit(
-                            AiStreamEvent.Completed(
-                                fullText = finalText,
-                                searchQueries = toolsInvoked.distinct()
-                            )
-                        )
-                        return@withTimeout
+                        stageOneText = response.text?.trim()
+                        break
                     }
 
                     if (candidateContent != null) {
@@ -229,6 +327,7 @@ class AiAnalystService(
                             async {
                                 Log.d(TAG, "[PitchEdge Tool Call] ${call.name} ${call.args}")
                                 val resultJson = executeToolCall(call.name, call.args)
+                                toolPayloads.add("${call.name}: $resultJson")
                                 FunctionResponsePart(
                                     name = call.name,
                                     response = resultJson
@@ -243,7 +342,37 @@ class AiAnalystService(
                         }
                     )
                 }
-                throw IllegalStateException("PitchEdge exceeded maximum tool-calling iterations.")
+
+                emit(AiStreamEvent.ToolProgress((toolsInvoked + "schema_synthesis").distinct()))
+
+                val synthesisPrompt = buildString {
+                    appendLine("Synthesize the verified live tool data and fixture context into strictly valid PitchEdgeAnalysisResponse JSON.")
+                    appendLine("User Query: $userQuery")
+                    if (fixtureContext.isNotBlank()) {
+                        appendLine("\nApp Fixture Baseline Context:\n$fixtureContext")
+                    }
+                    if (toolPayloads.isNotEmpty()) {
+                        appendLine("\nVerified Tool Outputs:\n${toolPayloads.joinToString("\n")}")
+                    }
+                    if (!stageOneText.isNullOrBlank()) {
+                        appendLine("\nAnalyst Draft Findings:\n$stageOneText")
+                    }
+                }
+
+                val structuredResponse = pitchEdgeStructuredModel.generateContent(synthesisPrompt)
+                val rawJson = structuredResponse.text?.takeIf { it.isNotBlank() }
+                    ?: throw IllegalStateException("PitchEdge structured JSON synthesis returned empty output.")
+
+                val parsed = PitchEdgeAnalysisResponse.fromJson(rawJson)
+                val formattedSummary = formatStructuredSummary(parsed)
+
+                emit(
+                    AiStreamEvent.Completed(
+                        fullText = formattedSummary,
+                        searchQueries = toolsInvoked.distinct(),
+                        structuredAnalysis = parsed
+                    )
+                )
             }
         } catch (e: TimeoutCancellationException) {
             Log.e(TAG, "PitchEdge tool orchestration timed out", e)
@@ -254,6 +383,20 @@ class AiAnalystService(
             Log.e(TAG, "PitchEdge tool orchestration failed", e)
             throw e
         }
+    }
+
+    private fun formatStructuredSummary(analysis: PitchEdgeAnalysisResponse): String {
+        val rec = analysis.recommendation
+        val edgeSign = if (rec.edgePercent > 0) "+" else ""
+        val oddsStr = rec.marketOdds?.let { String.format(Locale.US, "%.2f", it) } ?: "Unlisted"
+        return buildString {
+            appendLine("${analysis.fixtureTitle} [${analysis.matchStatus}] • ${analysis.tossOutcome}")
+            if (analysis.scoreTelemetry.isNotBlank()) {
+                appendLine(analysis.scoreTelemetry)
+            }
+            appendLine()
+            append("Verdict: ${rec.action} • ${rec.topSelection} (${rec.bestBookmaker} @ $oddsStr | Fair ${String.format(Locale.US, "%.2f", rec.fairValueOdds)}) • Edge $edgeSign${String.format(Locale.US, "%.2f", rec.edgePercent)}% • Stake ${rec.unitStake}u")
+        }.trim()
     }
 
     private suspend fun executeToolCall(
